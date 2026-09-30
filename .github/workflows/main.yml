@@ -9,19 +9,19 @@ jobs:
     timeout-minutes: 330
 
     env:
-      VM_NAME: q4os-mobile
-      VM_DIR: /home/runner/q4os
+      VM_NAME: "q4os-mobile"
+      VM_DIR: "/home/runner/q4os"
       RAM_MB: "1024"
       CPU_CORES: "2"
-      DISK_SIZE: 145G
-      Q4OS_USER: ZynexDEX
-      Q4OS_PASSWORD: ZynexDEX123!
+      DISK_SIZE: "145G"
+      Q4OS_USER: "ZynexDEX"
+      Q4OS_PASSWORD: "ZynexDEX123!"
       VNC_DISPLAY: "0"
       VNC_PORT: "5900"
       NOVNC_PORT: "6080"
       RDP_PORT: "3389"
-      Q4OS_ISO: q4os-6.9-x64-instcd.r1.iso
-      Q4OS_ISO_URL: https://sourceforge.net/projects/q4os/files/stable/q4os-6.9-x64-instcd.r1.iso/download
+      Q4OS_ISO: "q4os-6.9-x64-instcd.r1.iso"
+      Q4OS_ISO_URL: "https://sourceforge.net/projects/q4os/files/stable/q4os-6.9-x64-instcd.r1.iso/download"
 
     steps:
 
@@ -117,7 +117,7 @@ jobs:
 
           echo "ISO validation completed."
 
-      - name: Create 145GB Virtual Disk
+      - name: Create Virtual Disk
         run: |
           set -e
 
@@ -176,18 +176,16 @@ jobs:
             -display none \
             -vnc "0.0.0.0:$VNC_DISPLAY" \
             -netdev "user,id=net0,hostfwd=tcp::$RDP_PORT-:3389" \
-            -device virtio-net-pci,netdev=net0 \
+            -device "virtio-net-pci,netdev=net0" \
             > "$QEMU_LOG" 2>&1 &
 
-          QEMU_PID=$!
-
-          echo "$QEMU_PID" > "$VM_DIR/qemu.pid"
+          echo $! > "$VM_DIR/qemu.pid"
 
           sleep 10
 
-          if kill -0 "$QEMU_PID" 2>/dev/null; then
+          if kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then
             echo "QEMU STATUS: ONLINE"
-            echo "QEMU PID: $QEMU_PID"
+            echo "QEMU PID: $(cat "$VM_DIR/qemu.pid")"
           else
             echo "ERROR: QEMU failed to start."
             cat "$QEMU_LOG"
@@ -223,15 +221,12 @@ jobs:
             --listen "0.0.0.0:$NOVNC_PORT" \
             > "$VM_DIR/logs/novnc.log" 2>&1 &
 
-          NOVNC_PID=$!
-
-          echo "$NOVNC_PID" > "$VM_DIR/novnc.pid"
+          echo $! > "$VM_DIR/novnc.pid"
 
           sleep 5
 
-          if kill -0 "$NOVNC_PID" 2>/dev/null; then
+          if kill -0 "$(cat "$VM_DIR/novnc.pid")" 2>/dev/null; then
             echo "noVNC STATUS: ONLINE"
-            echo "noVNC PID: $NOVNC_PID"
           else
             echo "ERROR: noVNC failed."
             cat "$VM_DIR/logs/novnc.log"
@@ -248,8 +243,6 @@ jobs:
 
           curl -fsSL https://tailscale.com/install.sh | sh
 
-          echo "Starting tailscaled..."
-
           sudo service tailscaled start || true
 
           sleep 5
@@ -265,7 +258,7 @@ jobs:
 
       - name: Login to Tailscale
         env:
-          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          TS_AUTH_KEY: "${{ secrets.TAILSCALE_AUTHKEY }}"
 
         run: |
           set -e
@@ -328,14 +321,14 @@ jobs:
           sudo tailscale ip -4 || true
 
           echo ""
-          echo "NETWORK INTERFACES:"
+          echo "NETWORK:"
           ip addr
 
           echo ""
-          echo "LISTENING PORTS:"
+          echo "PORTS:"
           ss -lntp || true
 
-      - name: SESSION ACTIVE
+      - name: Session Information
         run: |
           echo "===================================================="
           echo "        🚀 SESSION ACTIVE - DEEPHAT TUNED 🚀"
@@ -359,6 +352,93 @@ jobs:
           echo "===================================================="
           echo "SERVICE CHECK"
           echo "===================================================="
+
+          echo ""
+          echo "QEMU:"
+
+          if kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then
+            echo "ONLINE"
+          else
+            echo "OFFLINE"
+            exit 1
+          fi
+
+          echo ""
+          echo "noVNC:"
+
+          if kill -0 "$(cat "$VM_DIR/novnc.pid")" 2>/dev/null; then
+            echo "ONLINE"
+          else
+            echo "OFFLINE"
+          fi
+
+          echo ""
+          echo "PORTS:"
+          ss -lnt | grep -E ":5900|:6080|:3389" || true
+
+      - name: Create Session Report
+        run: |
+          cat > "$VM_DIR/session-report.txt" <<EOF
+          ==========================================
+                  DEEPHAT Q4OS SESSION
+          ==========================================
+
+          VM: $VM_NAME
+          RAM: ${RAM_MB}MB
+          CPU: $CPU_CORES
+          STORAGE: $DISK_SIZE
+          USERNAME: $Q4OS_USER
+          TAILSCALE IP: $TAILSCALE_IP
+          VNC PORT: $VNC_PORT
+          NOVNC PORT: $NOVNC_PORT
+          RDP PORT: $RDP_PORT
+          STATUS: ONLINE
+
+          ==========================================
+          EOF
+
+          cat "$VM_DIR/session-report.txt"
+
+      - name: Monitor Session
+        run: |
+          set -e
+
+          echo "===================================================="
+          echo "        DEEPHAT SESSION MONITOR"
+          echo "===================================================="
+
+          while true
+          do
+            if ! kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then
+              echo "QEMU STOPPED."
+              echo ""
+              echo "===== QEMU LOG ====="
+              cat "$VM_DIR/logs/qemu.log" || true
+              exit 1
+            fi
+
+            if [ -f "$VM_DIR/novnc.pid" ]; then
+              if ! kill -0 "$(cat "$VM_DIR/novnc.pid")" 2>/dev/null; then
+                echo "WARNING: noVNC stopped."
+              fi
+            fi
+
+            echo "[$(date)] Q4OS VM ONLINE"
+            echo "[$(date)] Tailscale: $TAILSCALE_IP"
+
+            sleep 300
+          done
+
+      - name: Save DeepHat Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: "DeepHat-Q4OS-Session-${{ github.run_id }}-${{ github.run_attempt }}"
+          path: |
+            /home/runner/q4os/logs/
+            /home/runner/q4os/session-report.txt
+            /home/runner/q4os/vm-info.txt
+          retention-days: 1======================"
 
           echo ""
           echo "QEMU:"
