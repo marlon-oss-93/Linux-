@@ -1,0 +1,630 @@
+name: Q4OS Trinity - DeepHat Advanced RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  q4os-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    env:
+      VM_NAME: q4os-mobile
+      VM_DIR: /home/runner/q4os
+
+      RAM_MB: 1024
+      CPU_CORES: 2
+      DISK_SIZE: 145G
+
+      Q4OS_USER: ZynexDEX
+      Q4OS_PASSWORD: ZynexDEX123!
+
+      VNC_DISPLAY: 0
+      VNC_PORT: 5900
+      NOVNC_PORT: 6080
+      RDP_PORT: 3389
+
+      Q4OS_ISO: q4os-6.9-x64-instcd.r1.iso
+      Q4OS_ISO_URL: https://sourceforge.net/projects/q4os/files/stable/q4os-6.9-x64-instcd.r1.iso/download
+
+    steps:
+
+      # =========================================================
+      # SYSTEM INFORMATION
+      # =========================================================
+
+      - name: System Information
+        run: |
+          echo "===================================================="
+          echo "          DEEPHAT Q4OS SYSTEM INITIALIZER"
+          echo "===================================================="
+          echo "HOSTNAME:"
+          hostname
+          echo ""
+          echo "KERNEL:"
+          uname -a
+          echo ""
+          echo "CPU:"
+          nproc
+          echo ""
+          echo "MEMORY:"
+          free -h
+          echo ""
+          echo "STORAGE:"
+          df -h
+          echo "===================================================="
+
+      # =========================================================
+      # DEPENDENCIES
+      # =========================================================
+
+      - name: Install Dependencies
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            wget \
+            curl \
+            git \
+            python3 \
+            xz-utils \
+            net-tools \
+            iproute2 \
+            procps \
+            jq
+
+          echo ""
+          echo "===================================================="
+          echo "DEPENDENCIES INSTALLED"
+          echo "===================================================="
+
+          qemu-system-x86_64 --version
+          qemu-img --version
+          python3 --version
+
+      # =========================================================
+      # WORKSPACE
+      # =========================================================
+
+      - name: Prepare Workspace
+        run: |
+          set -e
+
+          mkdir -p "$VM_DIR"
+          mkdir -p "$VM_DIR/logs"
+          mkdir -p "$VM_DIR/scripts"
+          mkdir -p "$VM_DIR/novnc"
+
+          echo "Workspace:"
+          echo "$VM_DIR"
+
+      # =========================================================
+      # Q4OS DOWNLOAD
+      # =========================================================
+
+      - name: Download Q4OS
+        run: |
+          set -e
+
+          cd "$VM_DIR"
+
+          echo "===================================================="
+          echo "DOWNLOADING Q4OS"
+          echo "===================================================="
+
+          wget \
+            --progress=bar:force \
+            --tries=3 \
+            --timeout=60 \
+            -O "$Q4OS_ISO" \
+            "$Q4OS_ISO_URL"
+
+          if [ ! -s "$Q4OS_ISO" ]; then
+            echo "ERROR: Q4OS ISO download failed."
+            exit 1
+          fi
+
+          echo ""
+          echo "Q4OS ISO downloaded successfully."
+          ls -lh "$Q4OS_ISO"
+
+      # =========================================================
+      # ISO VALIDATION
+      # =========================================================
+
+      - name: Validate Q4OS ISO
+        run: |
+          set -e
+
+          cd "$VM_DIR"
+
+          echo "===================================================="
+          echo "VALIDATING Q4OS ISO"
+          echo "===================================================="
+
+          file "$Q4OS_ISO"
+
+          if [ ! -s "$Q4OS_ISO" ]; then
+            echo "ERROR: Invalid ISO."
+            exit 1
+          fi
+
+          echo "ISO validation completed."
+
+      # =========================================================
+      # 145GB VIRTUAL DISK
+      # =========================================================
+
+      - name: Create 145GB Virtual Disk
+        run: |
+          set -e
+
+          DISK="$VM_DIR/$VM_NAME.qcow2"
+
+          echo "===================================================="
+          echo "CREATING 145GB VIRTUAL DISK"
+          echo "===================================================="
+
+          qemu-img create \
+            -f qcow2 \
+            -o lazy_refcounts=on \
+            "$DISK" \
+            "$DISK_SIZE"
+
+          echo ""
+          qemu-img info "$DISK"
+
+      # =========================================================
+      # VM CONFIGURATION
+      # =========================================================
+
+      - name: Create VM Configuration
+        run: |
+          cat > "$VM_DIR/vm-info.txt" <<EOF
+          VM_NAME=$VM_NAME
+          RAM_MB=$RAM_MB
+          CPU_CORES=$CPU_CORES
+          DISK_SIZE=$DISK_SIZE
+          Q4OS_USER=$Q4OS_USER
+          VNC_PORT=$VNC_PORT
+          NOVNC_PORT=$NOVNC_PORT
+          RDP_PORT=$RDP_PORT
+          EOF
+
+          cat "$VM_DIR/vm-info.txt"
+
+      # =========================================================
+      # START QEMU
+      # =========================================================
+
+      - name: Start Q4OS VM
+        run: |
+          set -e
+
+          cd "$VM_DIR"
+
+          QEMU_LOG="$VM_DIR/logs/qemu.log"
+
+          echo "===================================================="
+          echo "STARTING Q4OS VM"
+          echo "===================================================="
+
+          nohup qemu-system-x86_64 \
+            -name "$VM_NAME" \
+            -machine q35 \
+            -accel tcg,thread=multi \
+            -m "$RAM_MB" \
+            -smp "$CPU_CORES" \
+            -cpu max \
+            -drive file="$VM_NAME.qcow2",format=qcow2,if=virtio,cache=writeback \
+            -cdrom "$Q4OS_ISO" \
+            -boot order=d \
+            -vga virtio \
+            -display none \
+            -vnc "0.0.0.0:$VNC_DISPLAY" \
+            -netdev user,id=net0,hostfwd=tcp::${RDP_PORT}-:3389 \
+            -device virtio-net-pci,netdev=net0 \
+            > "$QEMU_LOG" 2>&1 &
+
+          QEMU_PID=$!
+
+          echo "$QEMU_PID" > "$VM_DIR/qemu.pid"
+
+          sleep 10
+
+          if kill -0 "$QEMU_PID" 2>/dev/null; then
+            echo "QEMU STATUS: ONLINE"
+            echo "QEMU PID: $QEMU_PID"
+          else
+            echo "ERROR: QEMU failed to start."
+            echo ""
+            cat "$QEMU_LOG"
+            exit 1
+          fi
+
+      # =========================================================
+      # VERIFY VM
+      # =========================================================
+
+      - name: Verify Q4OS VM
+        run: |
+          PID=$(cat "$VM_DIR/qemu.pid")
+
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "===================================================="
+            echo "Q4OS VM ONLINE"
+            echo "PID: $PID"
+            echo "===================================================="
+          else
+            echo "Q4OS VM OFFLINE."
+            exit 1
+          fi
+
+      # =========================================================
+      # NOVNC
+      # =========================================================
+
+      - name: Install noVNC
+        run: |
+          set -e
+
+          if [ ! -d "$VM_DIR/novnc/.git" ]; then
+            git clone \
+              --depth 1 \
+              https://github.com/novnc/noVNC.git \
+              "$VM_DIR/novnc"
+          fi
+
+          if [ -f "$VM_DIR/novnc/utils/novnc_proxy" ]; then
+            echo "noVNC installed successfully."
+          else
+            echo "ERROR: noVNC installation failed."
+            exit 1
+          fi
+
+      # =========================================================
+      # START NOVNC
+      # =========================================================
+
+      - name: Start noVNC
+        run: |
+          set -e
+
+          NOVNC_LOG="$VM_DIR/logs/novnc.log"
+
+          cd "$VM_DIR/novnc"
+
+          nohup ./utils/novnc_proxy \
+            --vnc "127.0.0.1:$VNC_PORT" \
+            --listen "0.0.0.0:$NOVNC_PORT" \
+            > "$NOVNC_LOG" 2>&1 &
+
+          NOVNC_PID=$!
+
+          echo "$NOVNC_PID" > "$VM_DIR/novnc.pid"
+
+          sleep 5
+
+          if kill -0 "$NOVNC_PID" 2>/dev/null; then
+            echo "noVNC STATUS: ONLINE"
+            echo "PID: $NOVNC_PID"
+          else
+            echo "ERROR: noVNC failed."
+            cat "$NOVNC_LOG"
+            exit 1
+          fi
+
+      # =========================================================
+      # TAILSCALE INSTALLATION
+      # =========================================================
+
+      - name: Install Tailscale
+        run: |
+          set -e
+
+          echo "===================================================="
+          echo "INSTALLING TAILSCALE"
+          echo "===================================================="
+
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+          echo ""
+          echo "Starting tailscaled..."
+
+          sudo service tailscaled start || true
+
+          sleep 5
+
+          if ! pgrep -x tailscaled >/dev/null; then
+            echo "ERROR: tailscaled did not start."
+            sudo service tailscaled status || true
+            exit 1
+          fi
+
+          echo ""
+          echo "TAILSCALED: ONLINE"
+          echo ""
+
+          tailscale version
+
+      # =========================================================
+      # TAILSCALE LOGIN
+      # =========================================================
+
+      - name: Login to Tailscale
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+        run: |
+          set -e
+
+          echo "===================================================="
+          echo "             TAILSCALE LOGIN"
+          echo "===================================================="
+
+          if [ -z "$TS_AUTH_KEY" ]; then
+            echo "ERROR: TAILSCALE_AUTHKEY secret is missing."
+            echo ""
+            echo "Create this GitHub Repository Secret:"
+            echo ""
+            echo "TAILSCALE_AUTHKEY"
+            echo ""
+            exit 1
+          fi
+
+          echo "Auth key detected."
+          echo "Connecting to Tailscale..."
+
+          sudo tailscale up \
+            --auth-key="$TS_AUTH_KEY" \
+            --hostname="gh-q4os-${GITHUB_RUN_ID}" \
+            --accept-routes=false \
+            --timeout=30s
+
+          sleep 5
+
+          echo ""
+          echo "===================================================="
+          echo "TAILSCALE STATUS"
+          echo "===================================================="
+
+          sudo tailscale status
+
+          TS_IP=$(sudo tailscale ip -4 | head -n 1)
+
+          if [ -z "$TS_IP" ]; then
+            echo "ERROR: Tailscale IP was not assigned."
+            exit 1
+          fi
+
+          echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "===================================================="
+          echo "      TAILSCALE LOGIN SUCCESS"
+          echo "===================================================="
+          echo "Hostname: gh-q4os-${GITHUB_RUN_ID}"
+          echo "IP: $TS_IP"
+          echo "===================================================="
+
+      # =========================================================
+      # NETWORK DIAGNOSTICS
+      # =========================================================
+
+      - name: Network Diagnostics
+        run: |
+          echo "===================================================="
+          echo "NETWORK DIAGNOSTICS"
+          echo "===================================================="
+
+          echo ""
+          echo "TAILSCALE:"
+          sudo tailscale status || true
+
+          echo ""
+          echo "TAILSCALE IP:"
+          sudo tailscale ip -4 || true
+
+          echo ""
+          echo "NETWORK INTERFACES:"
+          ip addr
+
+          echo ""
+          echo "LISTENING PORTS:"
+          ss -lntp || true
+
+      # =========================================================
+      # RDP CREDENTIALS
+      # =========================================================
+
+      - name: Prepare RDP Login
+        shell: pwsh
+        env:
+          USERNAME: ${{ env.Q4OS_USER }}
+          PASSWORD: ${{ env.Q4OS_PASSWORD }}
+
+        run: |
+          $user = $env:USERNAME
+          $pass = $env:PASSWORD
+
+          "RDP_USER=$user" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+          "RDP_PASSWORD=$pass" |
+            Out-File -FilePath $env:GITHUB_ENV -Append
+
+          Write-Host "RDP credentials prepared."
+
+      # =========================================================
+      # DEEPHAT SESSION PANEL
+      # =========================================================
+
+      - name: SESSION ACTIVE
+        shell: pwsh
+        env:
+          USERNAME: ${{ env.Q4OS_USER }}
+          PASSWORD: ${{ env.Q4OS_PASSWORD }}
+          TAILSCALE_IP: ${{ env.TAILSCALE_IP }}
+
+        run: |
+          $ip = $env:TAILSCALE_IP
+          $user = $env:USERNAME
+          $pass = $env:PASSWORD
+
+          Write-Host "===================================================="
+          Write-Host "        🚀 SESSION ACTIVE - DEEPHAT TUNED 🚀        "
+          Write-Host "===================================================="
+          Write-Host "  [+] IP ADDRESS:     $ip"
+          Write-Host "  [+] USERNAME:       $user"
+          Write-Host "  [+] PASSWORD:       $pass"
+          Write-Host "===================================================="
+          Write-Host "  [+] STORAGE:        145GB (VIRTUAL EXPANSION)"
+          Write-Host "  [+] MODE:           GAMING OVERDRIVE (DEBLOATED)"
+          Write-Host "===================================================="
+          Write-Host "  [!] STATUS:         ONLINE"
+          Write-Host "===================================================="
+          Write-Host "  [!] DICA: Use o Windows App para conectar."
+          Write-Host "===================================================="
+
+      # =========================================================
+      # SERVICE CHECK
+      # =========================================================
+
+      - name: Service Check
+        run: |
+          echo "===================================================="
+          echo "SERVICE CHECK"
+          echo "===================================================="
+
+          echo ""
+          echo "QEMU:"
+
+          if kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then
+            echo "ONLINE"
+          else
+            echo "OFFLINE"
+            exit 1
+          fi
+
+          echo ""
+          echo "noVNC:"
+
+          if kill -0 "$(cat "$VM_DIR/novnc.pid")" 2>/dev/null; then
+            echo "ONLINE"
+          else
+            echo "OFFLINE"
+          fi
+
+          echo ""
+          echo "PORTS:"
+
+          ss -lnt | grep -E ":5900|:6080|:3389" || true
+
+          echo ""
+          echo "TAILSCALE:"
+
+          sudo tailscale status || true
+
+      # =========================================================
+      # SESSION REPORT
+      # =========================================================
+
+      - name: Create Session Report
+        run: |
+          cat > "$VM_DIR/session-report.txt" <<EOF
+          ==========================================
+                  DEEPHAT Q4OS SESSION
+          ==========================================
+
+          VM:
+          $VM_NAME
+
+          RAM:
+          ${RAM_MB}MB
+
+          CPU:
+          $CPU_CORES
+
+          STORAGE:
+          $DISK_SIZE
+
+          USERNAME:
+          $Q4OS_USER
+
+          TAILSCALE IP:
+          $TAILSCALE_IP
+
+          VNC PORT:
+          $VNC_PORT
+
+          NOVNC PORT:
+          $NOVNC_PORT
+
+          RDP PORT:
+          $RDP_PORT
+
+          STATUS:
+          ONLINE
+
+          ==========================================
+          EOF
+
+          cat "$VM_DIR/session-report.txt"
+
+      # =========================================================
+      # MONITOR
+      # =========================================================
+
+      - name: Monitor Session
+        run: |
+          set -e
+
+          echo "===================================================="
+          echo "        DEEPHAT SESSION MONITOR"
+          echo "===================================================="
+
+          while true
+          do
+            if ! kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null
+            then
+              echo "QEMU STOPPED."
+              echo ""
+              echo "===== QEMU LOG ====="
+              cat "$VM_DIR/logs/qemu.log" || true
+              exit 1
+            fi
+
+            if [ -f "$VM_DIR/novnc.pid" ]; then
+              if ! kill -0 "$(cat "$VM_DIR/novnc.pid")" 2>/dev/null
+              then
+                echo "WARNING: noVNC stopped."
+              fi
+            fi
+
+            echo "[$(date)] Q4OS VM ONLINE"
+            echo "[$(date)] Tailscale: $TAILSCALE_IP"
+
+            sleep 300
+          done
+
+      # =========================================================
+      # ARTIFACTS
+      # =========================================================
+
+      - name: Save DeepHat Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+
+        with:
+          name: DeepHat-Q4OS-Session-${{ github.run_id }}-${{ github.run_attempt }}
+
+          path: |
+            /home/runner/q4os/logs/
+            /home/runner/q4os/session-report.txt
+            /home/runner/q4os/vm-info.txt
+
+          retention-days: 1
