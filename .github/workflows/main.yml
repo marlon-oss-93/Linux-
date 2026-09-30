@@ -14,28 +14,31 @@ jobs:
       RAM_MB: "1024"
       CPU_CORES: "2"
       DISK_SIZE: "145G"
-      Q4OS_USER: ZynexDEX
+      Q4OS_USER: "ZynexDEX"
       Q4OS_PASSWORD: "ZynexDEX123!"
+      RDP_PORT: "3389"
       VNC_PORT: "5900"
       NOVNC_PORT: "6080"
-      RDP_PORT: "3389"
-      Q4OS_ISO: q4os-6.9-x64-instcd.r1.iso
+      Q4OS_ISO: "q4os-6.9-x64-instcd.r1.iso"
       Q4OS_ISO_URL: "https://sourceforge.net/projects/q4os/files/stable/q4os-6.9-x64-instcd.r1.iso/download"
 
     steps:
 
       - name: System information
+        shell: bash
         run: |
           echo "===================================================="
-          echo "          DEEPHAT Q4OS INITIALIZER"
+          echo "             DEEPHAT Q4OS INITIALIZER"
           echo "===================================================="
           echo "Host: $(hostname)"
           echo "CPU: $(nproc)"
           echo "Kernel: $(uname -r)"
+          echo ""
           free -h
           echo "===================================================="
 
       - name: Install dependencies
+        shell: bash
         run: |
           set -e
 
@@ -52,9 +55,10 @@ jobs:
             iproute2 \
             procps
 
-          echo "Dependencies installed."
+          echo "Dependencies installed successfully."
 
       - name: Prepare workspace
+        shell: bash
         run: |
           set -e
 
@@ -62,10 +66,11 @@ jobs:
           mkdir -p "$VM_DIR/logs"
           mkdir -p "$VM_DIR/novnc"
 
-          echo "Workspace:"
+          echo "Workspace created:"
           echo "$VM_DIR"
 
       - name: Download Q4OS
+        shell: bash
         run: |
           set -e
 
@@ -76,36 +81,51 @@ jobs:
           wget \
             --tries=3 \
             --timeout=60 \
+            --progress=dot:giga \
             -O "$Q4OS_ISO" \
             "$Q4OS_ISO_URL"
 
           if [ ! -s "$Q4OS_ISO" ]; then
-            echo "Q4OS download failed."
+            echo "ERROR: Q4OS ISO download failed."
             exit 1
           fi
 
+          echo "Q4OS ISO downloaded."
           ls -lh "$Q4OS_ISO"
 
       - name: Create virtual disk
+        shell: bash
         run: |
           set -e
 
-          echo "Creating $DISK_SIZE virtual disk..."
+          echo "Creating virtual disk..."
+          echo "Size: $DISK_SIZE"
 
           qemu-img create \
             -f qcow2 \
             "$VM_DIR/$VM_NAME.qcow2" \
             "$DISK_SIZE"
 
+          echo ""
+          echo "Virtual disk information:"
           qemu-img info "$VM_DIR/$VM_NAME.qcow2"
 
-      - name: Start Q4OS
+      - name: Start Q4OS virtual machine
+        shell: bash
         run: |
           set -e
 
           cd "$VM_DIR"
 
-          echo "Starting QEMU..."
+          echo "===================================================="
+          echo "               STARTING Q4OS VM"
+          echo "===================================================="
+          echo "RAM: ${RAM_MB}MB"
+          echo "CPU: ${CPU_CORES} vCPU"
+          echo "DISK: ${DISK_SIZE}"
+          echo "VNC: ${VNC_PORT}"
+          echo "RDP FORWARD: ${RDP_PORT}"
+          echo "===================================================="
 
           nohup qemu-system-x86_64 \
             -name "$VM_NAME" \
@@ -128,15 +148,20 @@ jobs:
 
           sleep 10
 
-          if kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null; then
+          PID="$(cat "$VM_DIR/qemu.pid")"
+
+          if kill -0 "$PID" 2>/dev/null; then
             echo "QEMU ONLINE"
+            echo "PID: $PID"
           else
             echo "QEMU FAILED"
+            echo ""
             cat "$VM_DIR/logs/qemu.log"
             exit 1
           fi
 
       - name: Install noVNC
+        shell: bash
         run: |
           set -e
 
@@ -148,13 +173,14 @@ jobs:
           fi
 
           if [ ! -f "$VM_DIR/novnc/utils/novnc_proxy" ]; then
-            echo "noVNC installation failed."
+            echo "ERROR: noVNC installation failed."
             exit 1
           fi
 
-          echo "noVNC installed."
+          echo "noVNC installed successfully."
 
       - name: Start noVNC
+        shell: bash
         run: |
           set -e
 
@@ -169,8 +195,11 @@ jobs:
 
           sleep 5
 
-          if kill -0 "$(cat "$VM_DIR/novnc.pid")" 2>/dev/null; then
+          PID="$(cat "$VM_DIR/novnc.pid")"
+
+          if kill -0 "$PID" 2>/dev/null; then
             echo "noVNC ONLINE"
+            echo "Port: 6080"
           else
             echo "noVNC FAILED"
             cat "$VM_DIR/logs/novnc.log"
@@ -178,42 +207,49 @@ jobs:
           fi
 
       - name: Install Tailscale
+        shell: bash
         run: |
           set -e
 
           echo "===================================================="
-          echo "INSTALLING TAILSCALE"
+          echo "               INSTALLING TAILSCALE"
           echo "===================================================="
 
           curl -fsSL https://tailscale.com/install.sh | sh
+
+          echo "Starting tailscaled..."
 
           sudo service tailscaled start || true
 
           sleep 5
 
-          if ! pgrep -x tailscaled >/dev/null; then
-            echo "tailscaled failed to start."
+          if pgrep -x tailscaled >/dev/null; then
+            echo "tailscaled is running."
+          else
+            echo "ERROR: tailscaled failed to start."
             sudo service tailscaled status || true
             exit 1
           fi
 
+          echo ""
+          echo "Tailscale version:"
           tailscale version
 
       - name: Login Tailscale
+        shell: bash
         env:
           TS_AUTH_KEY: "${{ secrets.TAILSCALE_AUTHKEY }}"
-
         run: |
           set -e
 
           echo "===================================================="
-          echo "             TAILSCALE LOGIN"
+          echo "                 TAILSCALE LOGIN"
           echo "===================================================="
 
           if [ -z "$TS_AUTH_KEY" ]; then
             echo "ERROR: TAILSCALE_AUTHKEY secret is missing."
             echo ""
-            echo "Required repository secret:"
+            echo "Create this repository secret:"
             echo "TAILSCALE_AUTHKEY"
             echo ""
             exit 1
@@ -232,7 +268,7 @@ jobs:
           TS_IP="$(sudo tailscale ip -4 | head -n 1)"
 
           if [ -z "$TS_IP" ]; then
-            echo "Tailscale IP was not assigned."
+            echo "ERROR: Tailscale IP was not assigned."
             sudo tailscale status || true
             exit 1
           fi
@@ -240,30 +276,40 @@ jobs:
           echo "TAILSCALE_IP=$TS_IP" >> "$GITHUB_ENV"
 
           echo "===================================================="
-          echo "TAILSCALE ONLINE"
+          echo "             TAILSCALE CONNECTION OK"
           echo "===================================================="
           echo "IP: $TS_IP"
           echo "===================================================="
 
-      - name: Network check
+      - name: Network diagnostics
+        shell: bash
         run: |
           echo "===================================================="
-          echo "NETWORK CHECK"
+          echo "                NETWORK DIAGNOSTICS"
           echo "===================================================="
 
-          echo "Tailscale:"
+          echo ""
+          echo "Tailscale status:"
           sudo tailscale status || true
 
           echo ""
-          echo "Tailscale IP:"
+          echo "Tailscale IPv4:"
           sudo tailscale ip -4 || true
 
           echo ""
           echo "Listening ports:"
           ss -lntp || true
 
-      - name: Session information
+          echo ""
+          echo "QEMU process:"
+          ps aux | grep qemu-system-x86_64 | grep -v grep || true
+
+          echo "===================================================="
+
+      - name: DeepHat session display
+        shell: bash
         run: |
+          echo ""
           echo "===================================================="
           echo "        SESSION ACTIVE - DEEPHAT TUNED"
           echo "===================================================="
@@ -271,17 +317,23 @@ jobs:
           echo "  [+] USERNAME:       $Q4OS_USER"
           echo "  [+] PASSWORD:       $Q4OS_PASSWORD"
           echo "===================================================="
-          echo "  [+] STORAGE:        145GB"
+          echo "  [+] STORAGE:        145GB VIRTUAL"
           echo "  [+] RAM:             1GB"
           echo "  [+] CPU:             2 vCPU"
           echo "  [+] MODE:            GAMING OVERDRIVE"
           echo "===================================================="
+          echo "  [+] RDP PORT:        3389"
+          echo "  [+] VNC PORT:        5900"
+          echo "  [+] NOVNC PORT:      6080"
+          echo "===================================================="
           echo "  [!] STATUS:          ONLINE"
           echo "===================================================="
-          echo "  [!] DICA: Use o Windows App para conectar."
+          echo "  [!] Use Windows App with the Tailscale IP."
           echo "===================================================="
+          echo ""
 
       - name: Create session report
+        shell: bash
         run: |
           cat > "$VM_DIR/session-report.txt" <<EOF
           DEEPHAT Q4OS SESSION
@@ -292,87 +344,46 @@ jobs:
           STORAGE: $DISK_SIZE
           USERNAME: $Q4OS_USER
           TAILSCALE IP: $TAILSCALE_IP
+          RDP PORT: $RDP_PORT
           VNC PORT: $VNC_PORT
           NOVNC PORT: $NOVNC_PORT
-          RDP PORT: $RDP_PORT
           STATUS: ONLINE
           EOF
 
           cat "$VM_DIR/session-report.txt"
 
       - name: Monitor session
+        shell: bash
         run: |
           set -e
 
           echo "===================================================="
-          echo "        DEEPHAT SESSION MONITOR"
+          echo "             DEEPHAT SESSION MONITOR"
           echo "===================================================="
 
           while true
           do
             if ! kill -0 "$(cat "$VM_DIR/qemu.pid")" 2>/dev/null
             then
-              echo "QEMU STOPPED."
+              echo "ERROR: QEMU STOPPED."
+              echo ""
               cat "$VM_DIR/logs/qemu.log" || true
               exit 1
             fi
 
-            echo "[$(date)] Q4OS VM ONLINE"
-            echo "[$(date)] Tailscale: $TAILSCALE_IP"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Q4OS VM ONLINE"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Tailscale: $TAILSCALE_IP"
 
             sleep 300
           done
 
-      - name: Save logs
+      - name: Upload session files
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: "DeepHat-Q4OS-${{ github.run_id }}"
-          path: "/home/runner/q4os/"
-          retention-days: 1qemu.pid")" 2>/dev/null; then
-            echo "ONLINE"
-          else
-            echo "OFFLINE"
-            exit 1
-          fi
-
-          echo ""
-          echo "noVNC:"
-
-          if kill -0 "$(cat "$VM_DIR/novnc.pid")" 2>/dev/null; then
-            echo "ONLINE"
-          else
-            echo "OFFLINE"
-          fi
-
-          echo ""
-          echo "PORTS:"
-          ss -lnt | grep -E ":5900|:6080|:3389" || true
-
-      - name: Create Session Report
-        run: |
-          cat > "$VM_DIR/session-report.txt" <<EOF
-          ==========================================
-                  DEEPHAT Q4OS SESSION
-          ==========================================
-
-          VM: $VM_NAME
-          RAM: ${RAM_MB}MB
-          CPU: $CPU_CORES
-          STORAGE: $DISK_SIZE
-          USERNAME: $Q4OS_USER
-          TAILSCALE IP: $TAILSCALE_IP
-          VNC PORT: $VNC_PORT
-          NOVNC PORT: $NOVNC_PORT
-          RDP PORT: $RDP_PORT
-          STATUS: ONLINE
-
-          ==========================================
-          EOF
-
-          cat "$VM_DIR/session-report.txt"
-
-      - name: Monitor Session
+          name: "DeepHat-Q4OS-${{ github.run_id }}-${{ github.run_attempt }}"
+          path: "/home/runner/q4os"
+          retention-days: 1 - name: Monitor Session
         run: |
           set -e
 
